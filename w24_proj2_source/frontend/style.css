@@ -1,0 +1,41 @@
+:root {
+  --bg: #0b141a;
+  --pane: #111b21;
+  --accent: #25d366;
+  --text: #e9edef;
+  --muted: #8696a0;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+
+.app {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  padding: 12px;
+}
+
+.pane { background: var(--pane); border-radius: 8px; display: grid; grid-template-rows: auto 120px 1fr; min-height: 70vh; }
+.pane-header { padding: 12px; border-bottom: 1px solid #1f2c33; font-weight: 600; }
+
+.chat-list { list-style: none; margin: 0; padding: 8px; display: grid; gap: 8px; }
+.chat-list-item { display: grid; grid-template-columns: 40px 1fr auto; gap: 8px; align-items: center; padding: 8px; border-radius: 8px; background: #0e171c; cursor: pointer; }
+.peer-avatar { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; background: #18323b; }
+.peer-name { font-weight: 600; }
+.peer-last { color: var(--muted); font-size: 12px; }
+
+.chat-pane { display: grid; grid-template-rows: auto 1fr auto; }
+.chat-header { padding: 10px 12px; border-bottom: 1px solid #1f2c33; display: flex; align-items: baseline; gap: 8px; }
+.chat-header small { color: var(--muted); }
+
+.messages { padding: 12px; overflow-y: auto; display: grid; gap: 8px; }
+.msg { max-width: 70%; padding: 8px 10px; border-radius: 10px; position: relative; }
+.msg.me { margin-left: auto; background: #005c4b; }
+.msg.them { margin-right: auto; background: #202c33; }
+.meta { display: block; color: var(--muted); font-size: 11px; margin-top: 4px; }
+
+.composer { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 12px; border-top: 1px solid #1f2c33; }
+.composer input { padding: 10px; border-radius: 8px; border: 1px solid #1f2c33; background: #0e171c; color: var(--text); }
+.composer button { background: var(--accent); color: #0b141a; border: none; padding: 10px 16px; border-radius: 8px; font-weight: 700; cursor: pointer; }
+.composer button:disabled { opacity: 0.6; cursor: not-allowed; }

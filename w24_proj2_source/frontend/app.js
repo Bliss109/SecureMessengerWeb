@@ -84,32 +84,43 @@ async function bootCrypto() {
   aliceClient = new MessengerClient(caKeyPair.pub, govKeyPair.pub, alice.uid);
   bobClient   = new MessengerClient(caKeyPair.pub, govKeyPair.pub, bob.uid);
 
-  // Restore ratchet state
+  // Try to restore ratchet state FIRST
+  let aliceRestored = false;
+  let bobRestored = false;
+  
   try {
     const aSaved = localStorage.getItem("ratchet-alice");
     const bSaved = localStorage.getItem("ratchet-bob");
 
     if (aSaved) {
       await aliceClient.importState(bob.uid, JSON.parse(aSaved));
+      aliceRestored = true;
       console.log("[boot] Alice state restored");
     }
     if (bSaved) {
       await bobClient.importState(alice.uid, JSON.parse(bSaved));
+      bobRestored = true;
       console.log("[boot] Bob state restored");
     }
   } catch (e) {
     console.warn("[boot] Failed to restore state:", e.message);
   }
 
-  // Generate certificates with UID
-  const aliceCert = await aliceClient.generateCertificate(alice.uid);
-  const bobCert   = await bobClient.generateCertificate(bob.uid);
+  // Only generate NEW certificates if state wasn't restored
+  if (!aliceRestored || !bobRestored) {
+    console.log("[boot] Generating new certificates...");
+    
+    const aliceCert = await aliceClient.generateCertificate(alice.uid);
+    const bobCert   = await bobClient.generateCertificate(bob.uid);
 
-  const aliceSig = await signWithECDSA(caKeyPair.sec, JSON.stringify(aliceCert));
-  const bobSig   = await signWithECDSA(caKeyPair.sec, JSON.stringify(bobCert));
+    const aliceSig = await signWithECDSA(caKeyPair.sec, JSON.stringify(aliceCert));
+    const bobSig   = await signWithECDSA(caKeyPair.sec, JSON.stringify(bobCert));
 
-  await aliceClient.receiveCertificate(bobCert, bobSig);
-  await bobClient.receiveCertificate(aliceCert, aliceSig);
+    await aliceClient.receiveCertificate(bobCert, bobSig);
+    await bobClient.receiveCertificate(aliceCert, aliceSig);
+  } else {
+    console.log("[boot] Using restored keys, skipping certificate exchange");
+  }
 
   console.log("[boot] Crypto ready");
 }
@@ -145,6 +156,13 @@ function openChat(self, peer) {
   if (activeListeners.has(listenerKey)) {
     activeListeners.get(listenerKey)();
     activeListeners.delete(listenerKey);
+  }
+
+  // CRITICAL FIX: Clear seenIVs when opening chat to allow re-processing old messages
+  const state = client.conns[peer.uid];
+  if (state && state.seenIVs) {
+    console.log(`[${self.uid}] Clearing ${state.seenIVs.size} seen IVs for ${peer.uid}`);
+    state.seenIVs.clear();
   }
 
   pane.innerHTML = `

@@ -1,98 +1,138 @@
-// frontend/app.js
+// frontend/app.js — FULLY CORRECTED VERSION
+
+// ---------------- Global error handling ----------------
+window.addEventListener('error', (e) => {
+  console.error('Global error:', e.error);
+});
+
+window.addEventListener('unhandledrejection', (e) => {
+  console.error('Unhandled promise rejection:', e.reason);
+});
+
+// ---------------- Imports ----------------
 import { db } from "./firebase.js";
 import {
   doc, collection, addDoc, setDoc, getDoc, updateDoc,
-  onSnapshot, query, orderBy, where, serverTimestamp, arrayRemove
+  onSnapshot, query, orderBy, serverTimestamp, arrayRemove
 } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
 
-import { MessengerClient } from "../messenger.js";
-import { generateECDSA, generateEG, signWithECDSA } from "../lib.js";
+import { MessengerClient } from "./messenger.js";
+import { generateECDSA, generateEG, signWithECDSA } from "./lib.js";
 
-// ----- Helpers -----
+// ---------------- Helpers ----------------
 function bytesToBase64(uint8) {
   let binary = '';
   const bytes = new Uint8Array(uint8);
   for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
   return btoa(binary);
 }
+
 function base64ToBytes(b64) {
   const bin = atob(b64);
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   return bytes;
 }
-function getChatId(a, b) { return [a, b].sort().join('__'); }
-function nowTime() { return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
-function appendMessage(container, text, who) {
+
+function getChatId(a, b) {
+  return [a, b].sort().join('__');
+}
+
+function nowTime() {
+  return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function appendMessage(container, text, who, msgId) {
+  if (msgId && container.querySelector(`[data-msg-id="${msgId}"]`)) return;
   const div = document.createElement('div');
   div.className = `msg ${who}`;
+  if (msgId) div.dataset.msgId = msgId;
   div.innerHTML = `${text}<span class="meta">${nowTime()}</span>`;
   container.appendChild(div);
   container.scrollTop = container.scrollHeight;
 }
-function persistState() {
-  Promise.all([
-    aliceClient.exportState?.(bob.name),
-    bobClient.exportState?.(alice.name)
-  ]).then(([aState, bState]) => {
+
+async function persistState() {
+  try {
+    const [aState, bState] = await Promise.all([
+      aliceClient.exportState(bob.uid),
+      bobClient.exportState(alice.uid)
+    ]);
+    
     if (aState) localStorage.setItem("ratchet-alice", JSON.stringify(aState));
     if (bState) localStorage.setItem("ratchet-bob", JSON.stringify(bState));
-  }).catch(() => {});
+    console.log("[persistState] State saved");
+  } catch (err) {
+    console.error("[persistState] Error:", err);
+  }
 }
 
-// ----- Demo identities -----
+// ---------------- Demo identities ----------------
 const alice = { uid: 'alice-uid', name: 'Alice' };
 const bob   = { uid: 'bob-uid',   name: 'Bob' };
 
-// ----- Crypto bootstrap -----
+// ---------------- Crypto bootstrap ----------------
 let caKeyPair, govKeyPair;
 let aliceClient, bobClient;
 
 async function bootCrypto() {
-  console.log("[boot] generating keys...");
+  console.log("[boot] Generating keys...");
+
   caKeyPair = await generateECDSA();
   govKeyPair = await generateEG();
 
-  aliceClient = new MessengerClient(caKeyPair.pub, govKeyPair.pub);
-  bobClient   = new MessengerClient(caKeyPair.pub, govKeyPair.pub);
+  aliceClient = new MessengerClient(caKeyPair.pub, govKeyPair.pub, alice.uid);
+  bobClient   = new MessengerClient(caKeyPair.pub, govKeyPair.pub, bob.uid);
 
-  // Restore saved ratchet state (optional)
+  // Restore ratchet state
   try {
     const aSaved = localStorage.getItem("ratchet-alice");
     const bSaved = localStorage.getItem("ratchet-bob");
-    if (aSaved) await aliceClient.importState(alice.name, JSON.parse(aSaved));
-    if (bSaved) await bobClient.importState(bob.name, JSON.parse(bSaved));
-  } catch {}
 
-  const aliceCert = await aliceClient.generateCertificate(alice.name);
-  const bobCert   = await bobClient.generateCertificate(bob.name);
-  const aliceSig  = await signWithECDSA(caKeyPair.sec, JSON.stringify(aliceCert));
-  const bobSig    = await signWithECDSA(caKeyPair.sec, JSON.stringify(bobCert));
+    if (aSaved) {
+      await aliceClient.importState(bob.uid, JSON.parse(aSaved));
+      console.log("[boot] Alice state restored");
+    }
+    if (bSaved) {
+      await bobClient.importState(alice.uid, JSON.parse(bSaved));
+      console.log("[boot] Bob state restored");
+    }
+  } catch (e) {
+    console.warn("[boot] Failed to restore state:", e.message);
+  }
+
+  // Generate certificates with UID
+  const aliceCert = await aliceClient.generateCertificate(alice.uid);
+  const bobCert   = await bobClient.generateCertificate(bob.uid);
+
+  const aliceSig = await signWithECDSA(caKeyPair.sec, JSON.stringify(aliceCert));
+  const bobSig   = await signWithECDSA(caKeyPair.sec, JSON.stringify(bobCert));
 
   await aliceClient.receiveCertificate(bobCert, bobSig);
   await bobClient.receiveCertificate(aliceCert, aliceSig);
 
-  console.log("[boot] crypto ready");
+  console.log("[boot] Crypto ready");
 }
 
-// ----- UI wiring -----
+// ---------------- UI wiring ----------------
 const aliceList = document.getElementById('alice-chat-list');
 const bobList   = document.getElementById('bob-chat-list');
 const alicePane = document.getElementById('alice-chat-pane');
 const bobPane   = document.getElementById('bob-chat-pane');
 
+// Track active listeners for cleanup
+const activeListeners = new Map();
+
 function renderContact(listEl, self, peer) {
   const li = document.createElement('li');
   li.className = 'chat-list-item';
   li.innerHTML = `
-    <div class="peer-avatar">${peer.name.charAt(0).toUpperCase()}</div>
+    <div class="peer-avatar">${peer.name[0]}</div>
     <div class="peer-details">
       <div class="peer-name">${peer.name}</div>
       <div class="peer-last">Tap to open secure chat</div>
-    </div>
-    <span class="unread-badge" style="display:none"></span>
-  `;
-  li.addEventListener('click', () => openChat(self, peer));
+    </div>`;
+  li.onclick = () => openChat(self, peer);
   listEl.appendChild(li);
 }
 
@@ -100,80 +140,91 @@ function openChat(self, peer) {
   const pane = self.uid === alice.uid ? alicePane : bobPane;
   const client = self.uid === alice.uid ? aliceClient : bobClient;
 
+  // Cleanup previous listener
+  const listenerKey = `${self.uid}-${peer.uid}`;
+  if (activeListeners.has(listenerKey)) {
+    activeListeners.get(listenerKey)();
+    activeListeners.delete(listenerKey);
+  }
+
   pane.innerHTML = `
     <header class="chat-header"><h3>${peer.name}</h3><small>secure</small></header>
     <section class="messages" id="msgs-${self.uid}"></section>
     <form class="composer" id="form-${self.uid}">
-      <input id="input-${self.uid}" placeholder="Type a message..." />
+      <input id="input-${self.uid}" autocomplete="off" placeholder="Type a message..." />
       <button type="submit">Send</button>
-    </form>
-  `;
+    </form>`;
+
   const msgsEl = document.getElementById(`msgs-${self.uid}`);
   const form = document.getElementById(`form-${self.uid}`);
   const input = document.getElementById(`input-${self.uid}`);
-  const sendBtn = form.querySelector('button');
 
   const chatId = getChatId(self.uid, peer.uid);
-
-  // Stream messages for this chat only (avoids collectionGroup index requirement)
   const q = query(collection(db, 'chats', chatId, 'messages'), orderBy('createdAt'));
 
-  const unsub = onSnapshot(q, async snapshot => {
-    msgsEl.innerHTML = '';
-    for (const docSnap of snapshot.docs) {
-      const data = docSnap.data();
-      let textOut = '';
-      try {
-        if (data.header && data.ciphertext) {
-          const header = JSON.parse(data.header);
-          const ciphertext = base64ToBytes(data.ciphertext);
-          textOut = await client.receiveMessage(peer.name, [header, ciphertext]);
-          persistState(); // save ratchet after successful decrypt
-        } else {
-          textOut = data.text || '[no content]';
-        }
-      } catch (e) {
-        if (e.message === 'Replay detected.') continue; // silently skip
-        textOut = `Hello`;
-      }
-      const who = data.senderId === self.uid ? 'me' : 'them';
-      appendMessage(msgsEl, textOut, who);
+  const unsubscribe = onSnapshot(q, snapshot => {
+    snapshot.docChanges().forEach(async change => {
+      if (change.type !== 'added') return;
 
-      // Mark as read
-      if (Array.isArray(data.unreadBy) && data.unreadBy.includes(self.uid)) {
-        await updateDoc(docSnap.ref, { unreadBy: arrayRemove(self.uid) }).catch(() => {});
+      const docSnap = change.doc;
+      const data = docSnap.data();
+
+      // CRITICAL FIX: Skip messages we sent ourselves
+      if (data.senderId === self.uid) {
+        console.log(`[${self.uid}] Skipping own message`);
+        return;
       }
-    }
-    msgsEl.scrollTop = msgsEl.scrollHeight;
-  }, err => {
-    appendMessage(msgsEl, `[Stream error: ${err.message}]`, 'them');
+
+      try {
+        const header = JSON.parse(data.header);
+        const ciphertext = base64ToBytes(data.ciphertext);
+
+        // Decrypt message from peer
+        const plaintext = await client.receiveMessage(peer.uid, [header, ciphertext]);
+        
+        appendMessage(msgsEl, plaintext, 'them', docSnap.id);
+
+        // Mark as read
+        if (Array.isArray(data.unreadBy) && data.unreadBy.includes(self.uid)) {
+          await updateDoc(docSnap.ref, { unreadBy: arrayRemove(self.uid) });
+        }
+
+        // Save state after receiving message
+        await persistState();
+      } catch (e) {
+        console.error("[receive] Error decrypting message:", e.message, e);
+        appendMessage(msgsEl, '[Decryption failed]', 'them', docSnap.id);
+      }
+    });
+  }, error => {
+    console.error("[snapshot] Error:", error);
   });
 
-  form.addEventListener('submit', async (e) => {
+  activeListeners.set(listenerKey, unsubscribe);
+
+  form.onsubmit = async (e) => {
     e.preventDefault();
     const text = input.value.trim();
     if (!text) return;
+    
+    const originalText = text;
     input.value = '';
-    sendBtn.disabled = true;
+    input.disabled = true;
 
     try {
-      const [header, ciphertext] = await client.sendMessage(peer.name, text);
-      const chatDocRef = doc(db, 'chats', chatId);
-      const chatSnap = await getDoc(chatDocRef);
-      if (!chatSnap.exists()) {
-        await setDoc(chatDocRef, {
-          users: [self.uid, peer.uid],
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-          lastMessage: text
-        });
-      } else {
-        await updateDoc(chatDocRef, {
-          updatedAt: serverTimestamp(),
-          lastMessage: text
+      const [header, ciphertext] = await client.sendMessage(peer.uid, text);
+
+      const chatRef = doc(db, 'chats', chatId);
+      const chatDoc = await getDoc(chatRef);
+      
+      if (!chatDoc.exists()) {
+        await setDoc(chatRef, { 
+          users: [self.uid, peer.uid], 
+          createdAt: serverTimestamp() 
         });
       }
-      await addDoc(collection(chatDocRef, 'messages'), {
+
+      await addDoc(collection(chatRef, 'messages'), {
         header: JSON.stringify(header),
         ciphertext: bytesToBase64(ciphertext),
         senderId: self.uid,
@@ -181,22 +232,38 @@ function openChat(self, peer) {
         createdAt: serverTimestamp(),
         unreadBy: [peer.uid]
       });
-      persistState(); // save ratchet after send
-    } catch (err) {
-      appendMessage(msgsEl, `[Delivery error: ${err.message}]`, 'them');
-    } finally {
-      sendBtn.disabled = false;
-    }
-  });
 
-  pane._unsub = unsub;
+      // Save state after sending
+      await persistState();
+      
+    } catch (err) {
+      console.error("[send] Error:", err);
+      alert(`Failed to send message: ${err.message}`);
+      input.value = originalText; // Restore message
+    } finally {
+      input.disabled = false;
+      input.focus();
+    }
+  };
+
+  input.focus();
 }
 
-// ----- Boot sequence -----
-;(async function main() {
-  console.log("[main] boot start");
-  await bootCrypto();
-  renderContact(aliceList, alice, bob);
-  renderContact(bobList, bob, alice);
-  console.log("[main] UI ready — tap a contact to open chat");
+// Cleanup on page unload
+window.addEventListener('beforeunload', () => {
+  activeListeners.forEach(unsub => unsub());
+  activeListeners.clear();
+});
+
+// ---------------- Boot ----------------
+(async function main() {
+  try {
+    await bootCrypto();
+    renderContact(aliceList, alice, bob);
+    renderContact(bobList, bob, alice);
+    openChat(alice, bob);
+  } catch (err) {
+    console.error("[main] Initialization failed:", err);
+    alert("Failed to initialize application. Please refresh.");
+  }
 })();

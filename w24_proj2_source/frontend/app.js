@@ -187,17 +187,20 @@ function openChat(self, peer) {
       const docSnap = change.doc;
       const data = docSnap.data();
 
-      // CRITICAL FIX: Skip messages we sent ourselves
+      // Handle our own messages
       if (data.senderId === self.uid) {
-        console.log(`[${self.uid}] Skipping own message`);
+        // Use stored plaintext for our own messages
+        if (data.plaintextForSender) {
+          appendMessage(msgsEl, data.plaintextForSender, 'me', docSnap.id);
+        }
         return;
       }
 
+      // For peer's messages, decrypt and display
       try {
         const header = JSON.parse(data.header);
         const ciphertext = base64ToBytes(data.ciphertext);
 
-        // Decrypt message from peer
         const plaintext = await client.receiveMessage(peer.uid, [header, ciphertext]);
         
         appendMessage(msgsEl, plaintext, 'them', docSnap.id);
@@ -225,7 +228,6 @@ function openChat(self, peer) {
     const text = input.value.trim();
     if (!text) return;
     
-    const originalText = text;
     input.value = '';
     input.disabled = true;
 
@@ -242,14 +244,18 @@ function openChat(self, peer) {
         });
       }
 
-      await addDoc(collection(chatRef, 'messages'), {
+      const msgRef = await addDoc(collection(chatRef, 'messages'), {
         header: JSON.stringify(header),
         ciphertext: bytesToBase64(ciphertext),
         senderId: self.uid,
         receiverId: peer.uid,
         createdAt: serverTimestamp(),
-        unreadBy: [peer.uid]
+        unreadBy: [peer.uid],
+        plaintextForSender: text // Store plaintext for sender to see after refresh
       });
+
+      // Show the message immediately in our own chat
+      appendMessage(msgsEl, text, 'me', msgRef.id);
 
       // Save state after sending
       await persistState();
@@ -257,7 +263,7 @@ function openChat(self, peer) {
     } catch (err) {
       console.error("[send] Error:", err);
       alert(`Failed to send message: ${err.message}`);
-      input.value = originalText; // Restore message
+      input.value = text; // Restore message
     } finally {
       input.disabled = false;
       input.focus();
